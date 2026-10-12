@@ -1,0 +1,42 @@
+{
+  "name": "kabuka-index-competition",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "deploy": "npm run build && wrangler deploy",
+    "db:migrate:local": "wrangler d1 migrations apply kabuka-competition-db --local",
+    "db:migrate:remote": "wrangler d1 migrations apply kabuka-competition-db --remote",
+    "db:seed:local": "wrangler d1 execute kabuka-competition-db --local --file=./seed.sql",
+    "prices:check": "node scripts/import-prices.mjs check",
+    "prices:import:local": "node scripts/import-prices.mjs local",
+    "prices:import:remote": "node scripts/import-prices.mjs remote",
+    "universe:check": "node scripts/import-contest-stocks.mjs check",
+    "universe:import:local": "node scripts/import-contest-stocks.mjs local",
+    "universe:import:remote": "node scripts/import-contest-stocks.mjs remote"
+  },
+  "dependencies": {
+    "@cloudflare/vite-plugin": "1.62.5",
+    "@vitejs/plugin-react": "^6.0.2",
+    "lucide-react": "^0.468.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "recharts": "^3.8.0",
+    "vite": "^8.0.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261006.1",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "typescript": "^5.9.0",
+    "wrangler": "4.147.0"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true,
+    "workerd@1.20261001.1": true
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "kabuka-index-competition",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-09-21",
+  "assets": { "not_found_handling": "single-page-application" },
+  "d1_databases": [{ "binding": "DB", "database_name": "kabuka-competition-db", "database_id": "00000000-0000-0000-0000-000000000000", "migrations_dir": "migrations" }],
+  "vars": { "APP_ENV": "development", "APP_URL": "http://localhost:5173", "EMAIL_FROM": "KABUKA INDEX <noreply@example.com>" }
+}
