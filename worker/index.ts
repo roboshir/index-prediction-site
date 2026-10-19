@@ -207,7 +207,7 @@ async function sendEntryEmail(env: Env, data: {
     body: JSON.stringify({
       from: env.EMAIL_FROM,
       to: [data.email],
-      subject: "KABUKA INDEX エントリー完了",
+      subject: "マイINDEX エントリー完了",
       html,
       text: `株価予想インデックス・コンテストへのエントリーが完了しました。\nニックネーム：${data.nickname}\n指数名：${data.indexName}\nEntry ID：${data.entryPublicId}\n${list}\nEntry IDは大切に保管してください。\nこのメールへの返信は不要です。`,
     }),
