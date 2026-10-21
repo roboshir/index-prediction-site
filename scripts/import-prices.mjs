@@ -247,9 +247,9 @@ FROM calculated;
 
 WITH ranked AS (
   SELECT
-    id,
-    RANK() OVER (PARTITION BY date ORDER BY return_rate DESC) AS new_rank
-  FROM index_daily_values
+    d.id,
+    RANK() OVER (PARTITION BY e.contest_id,d.date ORDER BY d.return_rate DESC) AS new_rank
+  FROM index_daily_values d JOIN entries e ON e.id=d.entry_id
 )
 UPDATE index_daily_values
 SET rank = (SELECT new_rank FROM ranked WHERE ranked.id = index_daily_values.id);

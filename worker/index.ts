@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { entryWindow, type Schedule } from "../src/contestSchedule";
 
 interface Env {
   DB: D1Database;
@@ -15,6 +16,7 @@ const stockSchema = z.object({
 });
 
 const entrySchema = z.object({
+  contestId: z.number().int().positive(),
   email: z.string().email().max(254),
   emailConfirm: z.string().email(),
   nickname: z.string().trim().min(1).max(30),
@@ -59,6 +61,8 @@ export default {
 };
 
 async function getStocks(url: URL, env: Env) {
+  const contest = await currentContest(env);
+  if (!contest) return json({ items: [] });
   const query = (url.searchParams.get("q") || "").trim().slice(0, 50);
   const escaped = query.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
   const contains = `%${escaped}%`;
@@ -68,20 +72,23 @@ async function getStocks(url: URL, env: Env) {
     FROM stocks s
     JOIN contest_stocks cs ON cs.stock_code=s.code
     JOIN contests c ON c.id=cs.contest_id
-    WHERE c.status='open'
+    WHERE c.id=? AND c.status='open'
       AND (? = '' OR s.code LIKE ? ESCAPE '\\' OR s.company_name LIKE ? ESCAPE '\\')
     ORDER BY
       CASE WHEN s.code = ? THEN 0 WHEN s.code LIKE ? ESCAPE '\\' THEN 1 ELSE 2 END,
       s.code
     LIMIT 30
-  `).bind(query, contains, contains, query.toUpperCase(), prefix.toUpperCase()).all();
+  `).bind(contest.id, query, contains, contains, query.toUpperCase(), prefix.toUpperCase()).all();
   return json({ items: stocks.results });
 }
 
-async function getContest(env: Env) {
-  const contest = await env.DB.prepare(`
-    SELECT c.id,c.name,c.entry_start entryStart,c.entry_end entryEnd,
+async function currentContest(env: Env) {
+  return env.DB.prepare(`
+    SELECT c.id,c.name,c.status,c.entry_start entryStart,c.entry_end entryEnd,
            c.contest_start contestStart,c.contest_end contestEnd,
+           c.prize_1_name prize1Name,c.prize_1_amount prize1Amount,
+           c.prize_2_name prize2Name,c.prize_2_amount prize2Amount,
+           c.prize_3_name prize3Name,c.prize_3_amount prize3Amount,
            COUNT(e.id) participantCount
     FROM contests c
     LEFT JOIN entries e ON e.contest_id=c.id
@@ -89,8 +96,12 @@ async function getContest(env: Env) {
     GROUP BY c.id
     ORDER BY c.id DESC
     LIMIT 1
-  `).first();
-  return json({ contest: contest || null });
+  `).first<Schedule & { id: number }>();
+}
+
+async function getContest(env: Env) {
+  const contest = await currentContest(env);
+  return json({ contest: contest || null, serverNow: Date.now() });
 }
 
 async function createEntry(request: Request, env: Env) {
@@ -98,12 +109,9 @@ async function createEntry(request: Request, env: Env) {
   if (!parsed.success) return json({ error: parsed.error.issues[0]?.message || "入力内容を確認してください" }, 400);
 
   const value = parsed.data;
-  const contest = await env.DB.prepare(`
-    SELECT id FROM contests
-    WHERE status='open' AND date('now') BETWEEN entry_start AND entry_end
-    ORDER BY id DESC LIMIT 1
-  `).first<{ id: number }>();
-  if (!contest) return json({ error: "現在エントリー受付中のコンテストはありません" }, 409);
+  const contest = await currentContest(env);
+  if (!contest || !entryWindow(contest, Date.now()).open) return json({ error: "現在エントリー受付中のコンテストはありません" }, 409);
+  if (value.contestId !== contest.id) return json({ error: "大会が切り替わりました。ページを再読み込みして、銘柄を選び直してください" }, 409);
 
   const allowed = await env.DB.prepare(`
     SELECT s.code,s.company_name name
@@ -179,8 +187,8 @@ async function recalculateEntry(env: Env, entryId: number) {
     `).bind(entryId),
     env.DB.prepare(`
       WITH ranked AS (
-        SELECT id,RANK() OVER (PARTITION BY date ORDER BY return_rate DESC) new_rank
-        FROM index_daily_values
+        SELECT d.id,RANK() OVER (PARTITION BY e.contest_id,d.date ORDER BY d.return_rate DESC) new_rank
+        FROM index_daily_values d JOIN entries e ON e.id=d.entry_id
       )
       UPDATE index_daily_values
       SET rank=(SELECT new_rank FROM ranked WHERE ranked.id=index_daily_values.id)
@@ -223,10 +231,12 @@ async function getRankings(url: URL, env: Env) {
   const page = Math.max(1, Number(url.searchParams.get("page")) || 1);
   const limit = 30;
   const offset = (page - 1) * limit;
-  const latest = await env.DB.prepare(`SELECT MAX(date) date FROM index_daily_values`).first<{ date: string | null }>();
+  const contest = await currentContest(env);
+  if (!contest) return json({ items: [], page, totalPages: 1, asOf: null });
+  const latest = await env.DB.prepare(`SELECT MAX(d.date) date FROM index_daily_values d JOIN entries e ON e.id=d.entry_id WHERE e.contest_id=?`).bind(contest.id).first<{ date: string | null }>();
   if (!latest?.date) return json({ items: [], page, totalPages: 1, asOf: null });
-  const count = await env.DB.prepare(`SELECT COUNT(*) total FROM index_daily_values WHERE date=?`)
-    .bind(latest.date).first<{ total: number }>();
+  const count = await env.DB.prepare(`SELECT COUNT(*) total FROM index_daily_values d JOIN entries e ON e.id=d.entry_id WHERE d.date=? AND e.contest_id=?`)
+    .bind(latest.date, contest.id).first<{ total: number }>();
   const rows = await env.DB.prepare(`
     SELECT d.rank,e.entry_public_id entryPublicId,e.nickname,e.index_name indexName,
            d.index_value indexValue,d.return_rate returnRate,
@@ -259,11 +269,11 @@ async function getRankings(url: URL, env: Env) {
     JOIN contests c ON c.id=e.contest_id
     JOIN entry_stocks es ON es.entry_id=e.id
     JOIN stocks s ON s.code=es.stock_code
-    WHERE d.date=?
+    WHERE d.date=? AND e.contest_id=?
     GROUP BY d.id
     ORDER BY d.rank,e.id
     LIMIT ? OFFSET ?
-  `).bind(latest.date, limit, offset).all<{ rank: number; entryPublicId: string; nickname: string; indexName: string; indexValue: number; returnRate: number; holdings: string; history: string }>();
+  `).bind(latest.date, contest.id, limit, offset).all<{ rank: number; entryPublicId: string; nickname: string; indexName: string; indexValue: number; returnRate: number; holdings: string; history: string }>();
   const items = rows.results.map(({ holdings, history, ...row }) => ({ ...row, stocks: JSON.parse(holdings), history: JSON.parse(history) }));
   return json({ items, page, totalPages: Math.max(1, Math.ceil((count?.total || 0) / limit)), asOf: latest.date });
 }

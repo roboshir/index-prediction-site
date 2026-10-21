@@ -1,8 +1,9 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { createContext, useContext, Fragment, useEffect, useMemo, useState } from "react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { BarChart3, Check, Clipboard, Crown, Search, Trophy } from "lucide-react";
 import { LegalPage } from "./LegalPage";
 import { StockSelectionIllustration, WeightIllustration } from "./StepIllustrations";
+import { entryWindow } from "./contestSchedule";
 import { api } from "./api";
 import type { EntryDetail, EntryResult, RankingRow, StockOption, StockPick } from "./types";
 
@@ -15,36 +16,59 @@ function Button({ children, onClick, kind = "primary", disabled = false, type = 
 function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) { return <section className={`card ${className}`}>{children}</section>; }
 function Rate({ value }: { value: number }) { return <span className={value >= 0 ? "positive" : "negative"}>{value >= 0 ? "+" : ""}{value.toFixed(2)}%</span>; }
 
+type ContestData = Awaited<ReturnType<typeof api.contest>>["contest"];
+const ContestContext = createContext<{contest:ContestData;open:boolean;label:string;state:string}>({contest:null,open:false,label:"受付状況を確認中…",state:"loading"});
+function useContestSchedule(){
+  const [contest,setContest]=useState<ContestData>(null);
+  const [ready,setReady]=useState(false);
+  const [failed,setFailed]=useState(false);
+  const [clock,setClock]=useState({server:Date.now(),received:performance.now()});
+  const [now,setNow]=useState(Date.now());
+  useEffect(()=>{
+    let active=true;
+    const refresh=()=>api.contest().then(data=>{if(active){setContest(data.contest);setClock({server:data.serverNow,received:performance.now()});setNow(data.serverNow);setReady(true);setFailed(false)}}).catch(()=>{if(active){setFailed(true);setReady(true)}});
+    void refresh();
+    const timer=window.setInterval(()=>{void refresh()},30000);
+    const focus=()=>{void refresh()};
+    window.addEventListener("focus",focus);
+    return()=>{active=false;window.clearInterval(timer);window.removeEventListener("focus",focus)};
+  },[]);
+  useEffect(()=>{const tick=()=>setNow(clock.server+performance.now()-clock.received);tick();const timer=window.setInterval(tick,1000);return()=>window.clearInterval(timer)},[clock]);
+  return {contest,...(!ready?{open:false,label:"受付状況を確認中…",state:"loading"}:failed?{open:false,label:"受付状況を取得できません",state:"error"}:entryWindow(contest,now))};
+}
+
 export default function App() {
+  const schedule=useContestSchedule();
   const initialId=window.location.pathname.match(/^\/index\/([^/]+)$/)?.[1]||"";
   const [page, setPage] = useState<Page>(initialId?"index":pageFromPath(window.location.pathname));
   const [detailId,setDetailId]=useState(decodeURIComponent(initialId));
   const [completed, setCompleted] = useState<EntryResult | null>(null);
   useEffect(()=>{const onPop=()=>{const id=window.location.pathname.match(/^\/index\/([^/]+)$/)?.[1];setDetailId(id?decodeURIComponent(id):"");setPage(id?"index":pageFromPath(window.location.pathname))};window.addEventListener("popstate",onPop);return()=>window.removeEventListener("popstate",onPop)},[]);
   const navigate:Navigate = (next,id) => { const path=next==="index"&&id?`/index/${encodeURIComponent(id)}`:["ranking","terms","privacy","entry"].includes(next)?`/${next}`:"/";window.history.pushState({},"",path);setDetailId(id||"");setPage(next);window.scrollTo({ top: 0, behavior: "smooth" }); };
-  return <div className="app"><Header page={page} navigate={navigate}/><main>
-    {page === "home" && <HomePage navigate={navigate}/>} {page === "entry" && <EntryPage onDone={(v) => { setCompleted(v); navigate("complete"); }}/>} {page === "complete" && completed && <CompletePage result={completed} navigate={navigate}/>} {page === "ranking" && <RankingPage navigate={navigate}/>} {page === "lookup" && <LookupPage/>} {page === "index" && <IndexPage id={detailId} navigate={navigate}/>} 
+  return <ContestContext.Provider value={schedule}><div className="app"><Header page={page} navigate={navigate}/><main>
+    {page === "home" && <HomePage navigate={navigate}/>} {page === "entry" && <EntryPage key={schedule.contest?.id??"none"} onDone={(v) => { setCompleted(v); navigate("complete"); }}/>} {page === "complete" && completed && <CompletePage result={completed} navigate={navigate}/>} {page === "ranking" && <RankingPage key={schedule.contest?.id??"none"} navigate={navigate}/>} {page === "lookup" && <LookupPage/>} {page === "index" && <IndexPage id={detailId} navigate={navigate}/>}
     {(page === "terms" || page === "privacy") && <LegalPage kind={page}/>}
-  </main><Footer/></div>;
+  </main><Footer/></div></ContestContext.Provider>;
 }
 
 function pageFromPath(path:string):Page { return path==="/terms"?"terms":path==="/privacy"?"privacy":path==="/ranking"?"ranking":path==="/entry"?"entry":"home"; }
 
-function Header({ page, navigate }: { page: Page; navigate: (p: Page) => void }) { const nav: Array<[Page,string]> = [["home","トップ"],["ranking","ランキング"]]; return <header className="header"><button className="brand" onClick={() => navigate("home")}><span className="brand-mark">M</span><span>マイ<b>INDEX</b></span></button><nav>{nav.map(([p,l]) => <button key={p} className={page===p?"active":""} onClick={() => navigate(p)}>{l}</button>)}</nav><Button onClick={() => navigate("entry")}>指数を作成して参加</Button></header>; }
+function Header({ page, navigate }: { page: Page; navigate: (p: Page) => void }) { const schedule=useContext(ContestContext); const nav: Array<[Page,string]> = [["home","トップ"],["ranking","ランキング"]]; return <header className="header"><button className="brand" onClick={() => navigate("home")}><span className="brand-mark">M</span><span>マイ<b>INDEX</b></span></button><nav>{nav.map(([p,l]) => <button key={p} className={page===p?"active":""} onClick={() => navigate(p)}>{l}</button>)}</nav><Button disabled={!schedule.open} onClick={() => navigate("entry")}>{schedule.label}</Button></header>; }
 
 function HomePage({ navigate }: { navigate: (p: Page) => void }) {
-  const [contest, setContest] = useState<{name:string;entryStart:string;entryEnd:string;contestStart:string;contestEnd:string;participantCount:number}|null>(null);
-  useEffect(() => { api.contest().then(r => setContest(r.contest)).catch(() => setContest({ name:"本番デモ 日本株インデックス杯", entryStart:"2026-09-01", entryEnd:"2026-10-31", contestStart:"2026-09-17", contestEnd:"2026-12-26", participantCount:0 })); }, []);
+  const schedule=useContext(ContestContext);
+  const {contest}=schedule;
   const prizeTitle=contest?.contestStart?`${contest.contestStart.slice(0,4)}年${Number(contest.contestStart.slice(5,7))}月大会の賞品`:"大会の賞品";
-  return <><section className="hero"><div className="eyebrow">FREE SIMULATION CONTEST</div><h1>選ぶのは、<em>5銘柄。</em><br/>競うのは、あなたの視点。</h1><p>日本株5銘柄と構成比率を決めて、オリジナル指数を作り、上昇率を競って賞品をGETしよう。実際の投資や金銭取引はありません。</p><div className="hero-actions"><Button onClick={() => navigate("entry")}>指数を作成して参加</Button><Button kind="outline" onClick={() => navigate("ranking")}>ランキングを見る</Button></div></section>
-  <section className="section contest"><div><div className="eyebrow">NOW OPEN</div><h2>{contest?.name || "開催中コンテスト"}</h2><p>参加無料。5銘柄のウェイト合計を100%にしてエントリーしてください。</p><div className="monthly-prizes"><div className="prize-title"><Trophy/><div><small>{prizeTitle}</small><strong>上位3名にプレゼント</strong></div></div><div className="prize-list"><div className="prize first"><span>1位</span><strong>5,000円分</strong><small>Amazonギフトカード</small></div><div className="prize"><span>2位</span><strong>3,000円分</strong><small>Amazonギフトカード</small></div><div className="prize"><span>3位</span><strong>1,000円分</strong><small>Amazonギフトカード</small></div></div></div></div><div className="stats"><div><small>エントリー期間</small><strong>{contest?.entryStart} — {contest?.entryEnd}</strong></div><div><small>コンテスト期間</small><strong>{contest?.contestStart} — {contest?.contestEnd}</strong></div><div><small>現在の参加者</small><strong>{contest?.participantCount ?? 0}<span>人</span></strong></div></div></section>
+  return <><section className="hero"><div className="eyebrow">FREE SIMULATION CONTEST</div><h1>選ぶのは、<em>5銘柄。</em><br/>競うのは、あなたの視点。</h1><p>日本株5銘柄と構成比率を決めて、オリジナル指数を作り、上昇率を競って賞品をGETしよう。実際の投資や金銭取引はありません。</p><div className="hero-actions"><Button disabled={!schedule.open} onClick={() => navigate("entry")}>{schedule.label}</Button><Button kind="outline" onClick={() => navigate("ranking")}>ランキングを見る</Button></div></section>
+  <section className="section contest"><div><div className="eyebrow">{schedule.state==="open"?"NOW OPEN":schedule.state==="upcoming"?"COMING SOON":"CONTEST"}</div><h2>{contest?.name || "開催中コンテスト"}</h2><p>{schedule.open?"参加無料。5銘柄のウェイト合計を100%にしてエントリーしてください。":schedule.label}</p>{contest&&<div className="monthly-prizes"><div className="prize-title"><Trophy/><div><small>{prizeTitle}</small><strong>上位3名にプレゼント</strong></div></div><div className="prize-list">{[{name:contest.prize1Name,amount:contest.prize1Amount},{name:contest.prize2Name,amount:contest.prize2Amount},{name:contest.prize3Name,amount:contest.prize3Amount}].map((prize,i)=><div className={`prize${i===0?" first":""}`} key={i}><span>{i+1}位</span><strong>{prize.amount.toLocaleString("ja-JP")}円分</strong><small>{prize.name}</small></div>)}</div></div>}</div><div className="stats"><div><small>エントリー期間（日本時間）</small><strong>{contest?.entryStart} — {contest?.entryEnd}</strong></div><div><small>コンテスト期間</small><strong>{contest?.contestStart} — {contest?.contestEnd}</strong></div><div><small>現在の参加者</small><strong>{contest?.participantCount ?? 0}<span>人</span></strong></div></div></section>
   <HomeRanking navigate={navigate}/>
   <section className="section"><div className="section-head"><div><div className="eyebrow">HOW IT WORKS</div><h2>3ステップで参加</h2></div></div><div className="steps"><Card><span>01</span><Crown/><h3>5銘柄を選ぶ</h3><p>日本株から重複しない5銘柄を選択します。</p><StockSelectionIllustration/></Card><Card><span>02</span><BarChart3/><h3>比率を決める</h3><p>各5〜50%、合計100%になるよう調整します。</p><WeightIllustration/></Card><Card><span>03</span><Trophy/><h3>上昇率を競う</h3><p>ランキングTOP3を目指して、賞品をGETしよう！</p><PrizeIllustration/></Card></div></section></>;
 }
 
 function HomeRanking({ navigate }: { navigate: (p: Page) => void }) {
+  const {contest}=useContext(ContestContext);
   const [rows,setRows]=useState<RankingRow[]>([]); const [asOf,setAsOf]=useState<string|null>(null);
-  useEffect(()=>{api.rankings(1).then(r=>{setRows(r.items.slice(0,5));setAsOf(r.asOf)}).catch(()=>{})},[]);
+  useEffect(()=>{setRows([]);setAsOf(null);let active=true;api.rankings(1).then(r=>{if(active){setRows(r.items.slice(0,5));setAsOf(r.asOf)}}).catch(()=>{if(active){setRows([]);setAsOf(null)}});return()=>{active=false}},[contest?.id]);
   return <section className="section home-ranking"><div className="section-head ranking-heading"><div><div className="eyebrow">LIVE LEADERBOARD</div><h2>現在のランキング</h2><p>{asOf?`${asOf} 終値時点`:"株価データの反映をお待ちください"}</p></div><Button kind="outline" onClick={()=>navigate("ranking")}>全ランキングを見る</Button></div><RankingDisclosure/><Card><div className="table-wrap"><table><thead><tr><th>順位</th><th>参加者</th><th>指数名</th><th>現在指数</th><th>騰落率</th></tr></thead><tbody><RankingRows rows={rows} navigate={navigate}/></tbody></table></div></Card></section>;
 }
 
@@ -54,9 +78,11 @@ function RankingDisclosure(){return <p className="ranking-disclosure">構成銘�
 
 function EntryPage({ onDone }: { onDone: (v: EntryResult) => void }) {
   const [form, setForm] = useState({ email:"", emailConfirm:"", nickname:"", indexName:"" }); const [picks,setPicks]=useState<StockPick[]>(defaultStocks.map((code)=>({code,weight:20}))); const [error,setError]=useState(""); const [loading,setLoading]=useState(false);
+  const schedule=useContext(ContestContext);
   const [agreed,setAgreed]=useState(false);
   const total=useMemo(()=>picks.reduce((s,p)=>s+Number(p.weight),0),[picks]);
-  const submit=async(e:React.FormEvent)=>{e.preventDefault();setError(""); if(!agreed)return setError("利用規約とプライバシーポリシーをご確認のうえ、同意してください。"); if(form.email!==form.emailConfirm)return setError("メールアドレスが一致しません。"); if(picks.some(p=>!p.code))return setError("5つすべての銘柄を検索結果から選んでください。"); if(new Set(picks.map(p=>p.code)).size!==5)return setError("同じ銘柄は選択できません。"); if(total!==100)return setError("ウェイト合計を100%にしてください。"); setLoading(true); try{onDone(await api.createEntry({...form,stocks:picks}));}catch(e){setError(e instanceof Error?e.message:"登録できませんでした。");}finally{setLoading(false)}};
+  const submit=async(e:React.FormEvent)=>{e.preventDefault();setError(""); if(!schedule.open)return setError(schedule.label); if(!agreed)return setError("利用規約とプライバシーポリシーをご確認のうえ、同意してください。"); if(form.email!==form.emailConfirm)return setError("メールアドレスが一致しません。"); if(picks.some(p=>!p.code))return setError("5つすべての銘柄を検索結果から選んでください。"); if(new Set(picks.map(p=>p.code)).size!==5)return setError("同じ銘柄は選択できません。"); if(total!==100)return setError("ウェイト合計を100%にしてください。"); setLoading(true); try{onDone(await api.createEntry({...form,stocks:picks,contestId:schedule.contest!.id}));}catch(e){setError(e instanceof Error?e.message:"登録できませんでした。");}finally{setLoading(false)}};
+  if(!schedule.open)return <div className="page narrow"><div className="page-title"><div className="eyebrow">ENTRY</div><h1>エントリー受付</h1></div><Card><p role="status">{schedule.label}</p>{schedule.contest&&<p>受付期間：{schedule.contest.entryStart} 0:00 〜 {schedule.contest.entryEnd} 23:59（日本時間）</p>}<a href="/">トップページへ戻る</a></Card></div>;
   return <div className="page narrow"><div className="page-title"><div className="eyebrow">ENTRY</div><h1>オリジナル指数を作る</h1><p>登録後に発行されるEntry IDは、成績確認に必要です。</p></div><form onSubmit={submit}><Card><h2>基本情報</h2><div className="form-grid"><label>メールアドレス<input type="email" aria-describedby="prize-email-note" required value={form.email} onChange={e=>setForm({...form,email:e.target.value})}/><small id="prize-email-note" className="field-note">入賞した場合、賞品はこのメールアドレス宛にお送りします。</small></label><label>メールアドレス（確認）<input type="email" required value={form.emailConfirm} onChange={e=>setForm({...form,emailConfirm:e.target.value})}/></label><label>ニックネーム<input required maxLength={30} value={form.nickname} onChange={e=>setForm({...form,nickname:e.target.value})}/></label><label>オリジナル指数名<input required maxLength={40} value={form.indexName} onChange={e=>setForm({...form,indexName:e.target.value})}/></label></div></Card><Card><div className="stock-head"><div><h2>5銘柄と構成比率</h2><p>証券コードまたは銘柄名で検索。各5〜50%、合計100%</p></div><div className={total===100?"total ok":"total"}>合計 <strong>{total}%</strong></div></div><div className="stock-list">{picks.map((pick,i)=><div className="stock-row" key={i}><span className="num">{i+1}</span><StockSearch value={pick.code} label={`${i+1}銘柄目`} onChange={code=>setPicks(picks.map((p,j)=>j===i?{...p,code}:p))}/><label className="weight"><input type="number" min="5" max="50" required value={pick.weight} onChange={e=>setPicks(picks.map((p,j)=>j===i?{...p,weight:Number(e.target.value)}:p))}/><span>%</span></label></div>)}</div></Card>{error&&<div className="error">{error}</div>}<label className="consent-check"><input type="checkbox" required checked={agreed} onChange={e=>setAgreed(e.target.checked)}/><span><a href="/terms" target="_blank" rel="noopener noreferrer">利用規約</a>と<a href="/privacy" target="_blank" rel="noopener noreferrer">プライバシーポリシー</a>を確認し、同意します（別タブで開きます）。</span></label><Button type="submit" disabled={loading||!agreed}>{loading?"登録しています…":"無料でエントリーする"}</Button></form></div>;
 }
 
