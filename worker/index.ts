@@ -228,6 +228,11 @@ const escapeHtml = (value: string) => value.replace(/[&<>"']/g, (character) => (
 }[character]!));
 
 async function getRankings(url: URL, env: Env) {
+  const query=(url.searchParams.get("q")||"").trim().slice(0,100);
+  const field=url.searchParams.get("field");
+  const pattern=`%${query.replaceAll("\\","\\\\").replaceAll("%","\\%").replaceAll("_","\\_")}%`;
+  const searchSql=field==="nickname"?"e.nickname LIKE ? ESCAPE '\\'":field==="indexName"?"e.index_name LIKE ? ESCAPE '\\'":"(e.nickname LIKE ? ESCAPE '\\' OR e.index_name LIKE ? ESCAPE '\\')";
+  const searchValues=field==="nickname"||field==="indexName"?[pattern]:[pattern,pattern];
   const page = Math.max(1, Number(url.searchParams.get("page")) || 1);
   const limit = 30;
   const offset = (page - 1) * limit;
@@ -235,8 +240,8 @@ async function getRankings(url: URL, env: Env) {
   if (!contest) return json({ items: [], page, totalPages: 1, asOf: null });
   const latest = await env.DB.prepare(`SELECT MAX(d.date) date FROM index_daily_values d JOIN entries e ON e.id=d.entry_id WHERE e.contest_id=?`).bind(contest.id).first<{ date: string | null }>();
   if (!latest?.date) return json({ items: [], page, totalPages: 1, asOf: null });
-  const count = await env.DB.prepare(`SELECT COUNT(*) total FROM index_daily_values d JOIN entries e ON e.id=d.entry_id WHERE d.date=? AND e.contest_id=?`)
-    .bind(latest.date, contest.id).first<{ total: number }>();
+  const count = await env.DB.prepare(`SELECT COUNT(*) total FROM index_daily_values d JOIN entries e ON e.id=d.entry_id WHERE d.date=? AND e.contest_id=? AND ${searchSql}`)
+    .bind(latest.date, contest.id, ...searchValues).first<{ total: number }>();
   const rows = await env.DB.prepare(`
     SELECT d.rank,e.entry_public_id entryPublicId,e.nickname,e.index_name indexName,
            d.index_value indexValue,d.return_rate returnRate,
@@ -269,11 +274,11 @@ async function getRankings(url: URL, env: Env) {
     JOIN contests c ON c.id=e.contest_id
     JOIN entry_stocks es ON es.entry_id=e.id
     JOIN stocks s ON s.code=es.stock_code
-    WHERE d.date=? AND e.contest_id=?
+    WHERE d.date=? AND e.contest_id=? AND ${searchSql}
     GROUP BY d.id
     ORDER BY d.rank,e.id
     LIMIT ? OFFSET ?
-  `).bind(latest.date, contest.id, limit, offset).all<{ rank: number; entryPublicId: string; nickname: string; indexName: string; indexValue: number; returnRate: number; holdings: string; history: string }>();
+  `).bind(latest.date, contest.id, ...searchValues, limit, offset).all<{ rank: number; entryPublicId: string; nickname: string; indexName: string; indexValue: number; returnRate: number; holdings: string; history: string }>();
   const items = rows.results.map(({ holdings, history, ...row }) => ({ ...row, stocks: JSON.parse(holdings), history: JSON.parse(history) }));
   return json({ items, page, totalPages: Math.max(1, Math.ceil((count?.total || 0) / limit)), asOf: latest.date });
 }
